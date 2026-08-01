@@ -1,7 +1,10 @@
 import { program } from 'commander';
 import chalk from 'chalk';
 import * as readline from 'readline';
+import inquirer from 'inquirer';
 import { saveConfig, loadConfig } from './config.js';
+import { initSyncServer } from './sync.js';
+import { deriveKey } from './crypto.js';
 
 const rl = readline.createInterface({
   input: process.stdin,
@@ -57,6 +60,34 @@ program
     
     console.log(chalk.green('✔ Watcher is ready. Configuration verified.'));
     rl.close();
+  });
+
+program
+  .command('start [roomId]')
+  .description('Start the shadow-sync server for a room')
+  .action(async (roomId) => {
+    if (!roomId) {
+      console.error(chalk.red('✖ Error: Missing roomId. Please provide a roomId to start.'));
+      console.log(chalk.yellow('Usage: shadow-sync start <roomId>'));
+      process.exit(1);
+    }
+    
+    const { passphrase } = await inquirer.prompt([
+      {
+        type: 'password',
+        name: 'passphrase',
+        message: 'Enter the room passphrase:',
+        mask: '*'
+      }
+    ]);
+
+    try {
+      const key = deriveKey(passphrase, roomId);
+      initSyncServer({ roomId, key, mode: 'sync' });
+    } catch (error) {
+      console.error(chalk.red(`✖ Failed to start server: ${error.message}`));
+      process.exit(1);
+    }
   });
 
 program.parse(process.argv);
