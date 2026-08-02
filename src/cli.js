@@ -1,17 +1,9 @@
 import { program } from 'commander';
 import chalk from 'chalk';
-import * as readline from 'readline';
 import inquirer from 'inquirer';
 import { saveConfig, loadConfig } from './config.js';
 import { initSyncServer } from './sync.js';
 import { deriveKey } from './crypto.js';
-
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout
-});
-
-const askQuestion = (query) => new Promise((resolve) => rl.question(query, resolve));
 
 function generateRoomId() {
   return Math.random().toString(36).substring(2, 8).toUpperCase();
@@ -26,26 +18,41 @@ program
   .command('init')
   .description('Initialize a new shadow-sync room')
   .action(async () => {
-    const passphrase = await askQuestion('Enter a passphrase for the room: ');
+    // Swapped readline for inquirer to get the ****** mask
+    const { passphrase } = await inquirer.prompt([
+      {
+        type: 'password',
+        name: 'passphrase',
+        message: 'Enter a passphrase for the room:',
+        mask: '*'
+      }
+    ]);
+    
     const roomId = generateRoomId();
     
     if (saveConfig(roomId, passphrase)) {
       console.log(chalk.green(`✔ Room created successfully!`));
       console.log(chalk.blue(`ℹ Room ID: ${roomId}`));
     }
-    rl.close();
   });
 
 program
   .command('join <roomId>')
   .description('Join an existing shadow-sync room')
   .action(async (roomId) => {
-    const passphrase = await askQuestion('Enter the passphrase for the room: ');
+    // Swapped readline for inquirer here too
+    const { passphrase } = await inquirer.prompt([
+      {
+        type: 'password',
+        name: 'passphrase',
+        message: 'Enter the passphrase for the room:',
+        mask: '*'
+      }
+    ]);
     
     if (saveConfig(roomId, passphrase)) {
       console.log(chalk.green(`✔ Joined room ${roomId} successfully!`));
     }
-    rl.close();
   });
 
 program
@@ -59,7 +66,15 @@ program
     }
     
     console.log(chalk.green('✔ Watcher is ready. Configuration verified.'));
-    rl.close();
+    
+    try {
+      // Actually start the engine! This keeps the terminal alive.
+      const key = deriveKey(config.passphrase, config.roomId);
+      initSyncServer({ roomId: config.roomId, key, mode: 'sync' });
+    } catch (error) {
+      console.error(chalk.red(`✖ Failed to start watcher: ${error.message}`));
+      process.exit(1);
+    }
   });
 
 program

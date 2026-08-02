@@ -2,15 +2,15 @@ import WebSocket from 'ws';
 import chalk from 'chalk';
 import ora from 'ora';
 import fs from 'fs/promises';
-import path from 'path';
 import { encryptEnv, decryptEnv } from './crypto.js';
 import { startWatching } from './watcher.js';
 
 let ws;
-let isUpdatingLocal = false; // Flag to prevent recursive loops
+// Replace the boolean flag with a string tracker
+let lastKnownContent = ''; 
 
 export function initSyncServer({ roomId, key, mode }) {
-  const wsUrl = process.env.SYNC_WS_URL || 'wss://ws.postman-echo.com/raw';
+  const wsUrl = process.env.SYNC_WS_URL || 'ws://localhost:8080';
   
   const spinner = ora(`Connecting to Sync Server...`).start();
 
@@ -21,12 +21,15 @@ export function initSyncServer({ roomId, key, mode }) {
     
     // Join room
     ws.send(JSON.stringify({ type: 'join', roomId }));
-    
     console.log(chalk.cyan(`Joined room: ${roomId}`));
 
     // Set up file watcher
     startWatching(async (fileContent) => {
-      if (isUpdatingLocal) return; // Prevent echoing back what we just received
+      // THE FIX: If the text hasn't actually changed, it's just a ghost echo. Ignore it!
+      if (fileContent === lastKnownContent) return;
+      
+      // It's a genuine new change, so update our tracker
+      lastKnownContent = fileContent;
       
       const syncSpinner = ora('Encrypting and syncing changes...').start();
       try {
@@ -44,32 +47,26 @@ export function initSyncServer({ roomId, key, mode }) {
     });
   });
 
-  ws.on('message', async (data) => {
+  ws.on('message', async (messageAsString) => {
     try {
-      const message = JSON.parse(data.toString());
-      
-      if (message.type === 'sync' && message.roomId === roomId && message.payload) {
-        const recvSpinner = ora('Receiving and decrypting changes...').start();
-        try {
-          const decrypted = decryptEnv(message.payload, key);
-          
-          isUpdatingLocal = true;
-          const envPath = path.resolve(process.cwd(), '.env');
-          await fs.writeFile(envPath, decrypted, 'utf-8');
-          
-          // Reset flag after a short delay to allow chokidar events to fire and be ignored
-          setTimeout(() => {
-            isUpdatingLocal = false;
-          }, 1000);
-          
-          recvSpinner.succeed(chalk.green('Local .env updated successfully!'));
-        } catch (err) {
-          recvSpinner.fail(chalk.red('Failed to decrypt or apply changes.'));
-          console.error(chalk.red(err.message));
-        }
+      const parsedMessage = JSON.parse(messageAsString);
+
+      if (parsedMessage.type === 'update') {
+        const encryptedPayload = parsedMessage.payload;
+        const decryptedContent = decryptEnv(encryptedPayload, key);
+
+        // THE FIX: If what we just received is identical to what we already have, ignore it!
+        if (decryptedContent === lastKnownContent) return;
+
+        // Update our tracker BEFORE writing to the file
+        lastKnownContent = decryptedContent;
+
+        await fs.writeFile('.env', decryptedContent, 'utf8');
+
+        console.log(chalk.green('↓ Received and applied remote update.'));
       }
-    } catch (err) {
-      // Ignore messages that are not JSON or lack expected fields
+    } catch (error) {
+      console.error(chalk.red('[-] Error processing incoming message:'), error);
     }
   });
 
