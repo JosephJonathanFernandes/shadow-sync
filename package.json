@@ -7,7 +7,8 @@
     "shadow-sync": "./bin/index.js"
   },
   "scripts": {
-    "test": "vitest run"
+    "test": "vitest run",
+    "start": "node server.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.38.0",

@@ -50,4 +50,5 @@ wss.on('connection', (ws) => {
     });
 });
 
-console.log(`🚀 Shadow-Sync Relay Server running on ws://localhost:${PORT}`);
+// CHANGED: Removed the hardcoded localhost URL so it makes sense in the cloud
+console.log(`🚀 Shadow-Sync Relay Server is listening on port ${PORT}`);
