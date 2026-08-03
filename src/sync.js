@@ -10,7 +10,7 @@ let ws;
 let lastKnownContent = ''; 
 
 export function initSyncServer({ roomId, key, mode }) {
-  const wsUrl = process.env.SYNC_WS_URL || 'ws://shadow-sync.onrender.com';
+  const wsUrl = process.env.SYNC_WS_URL || 'wss://shadow-sync.onrender.com';
   
   const spinner = ora(`Connecting to Sync Server...`).start();
 
