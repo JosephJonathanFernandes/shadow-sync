@@ -32,6 +32,16 @@ wss.on('connection', (ws) => {
                     }
                 });
             }
+
+            if (type === 'request_state' && currentRoom) {
+                console.log(`[*] Forwarding state request in room: ${currentRoom}`);
+                const clients = rooms.get(currentRoom);
+                clients.forEach((client) => {
+                    if (client !== ws && client.readyState === WebSocket.OPEN) {
+                        client.send(JSON.stringify({ type: 'request_state', roomId: currentRoom }));
+                    }
+                });
+            }
         } catch (error) {
             console.error('[-] Failed to process message:', error);
         }

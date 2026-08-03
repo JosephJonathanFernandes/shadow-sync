@@ -22,6 +22,9 @@ export function initSyncServer({ roomId, key, mode }) {
     // Join room
     ws.send(JSON.stringify({ type: 'join', roomId }));
     console.log(chalk.cyan(`Joined room: ${roomId}`));
+    
+    // Request current state from existing clients in the room
+    ws.send(JSON.stringify({ type: 'request_state', roomId }));
 
     // Set up file watcher
     startWatching(async (fileContent) => {
@@ -51,7 +54,23 @@ export function initSyncServer({ roomId, key, mode }) {
     try {
       const parsedMessage = JSON.parse(messageAsString);
 
-      if (parsedMessage.type === 'update') {
+      if (parsedMessage.type === 'request_state') {
+        try {
+          const fileContent = await fs.readFile('.env', 'utf8');
+          const encrypted = encryptEnv(fileContent, key);
+          ws.send(JSON.stringify({
+            type: 'sync',
+            roomId,
+            payload: encrypted
+          }));
+          console.log(chalk.cyan('↑ Synced local state to late joiner.'));
+        } catch (err) {
+          // If the file doesn't exist, simply ignore
+          if (err.code !== 'ENOENT') {
+            console.error(chalk.red('[-] Error reading .env for state request:'), err);
+          }
+        }
+      } else if (parsedMessage.type === 'update') {
         const encryptedPayload = parsedMessage.payload;
         const decryptedContent = decryptEnv(encryptedPayload, key);
 
