@@ -1,17 +1,15 @@
 import chalk from 'chalk';
 import ora from 'ora';
-import fs from 'fs/promises';
 import { encryptEnv, decryptEnv } from './crypto.js';
 import { startWatching } from './watcher.js';
 import { NetworkManager } from './NetworkManager.js';
-
-let lastKnownContent = ''; 
+import { StateManager } from './StateManager.js';
 
 export async function initSyncServer({ roomId, key, mode }) {
-  try {
-    await fs.access('.env');
-  } catch {
-    await fs.writeFile('.env', '', 'utf8');
+  const stateManager = new StateManager('.env');
+  
+  const { created } = await stateManager.getLocalState();
+  if (created) {
     console.log(chalk.yellow('Created empty .env file for cold start.'));
   }
 
@@ -22,13 +20,14 @@ export async function initSyncServer({ roomId, key, mode }) {
   let isOffline = false;
   
   // Set up file watcher immediately so Node event loop doesn't exit if connection fails
-  startWatching(async (fileContent) => {
-    // THE FIX: If the text hasn't actually changed, it's just a ghost echo. Ignore it!
-    if (fileContent === lastKnownContent) return;
+  startWatching((fileContent) => {
+    if (!stateManager.checkAndTrackLocalUpdate(fileContent)) return;
     
-    // It's a genuine new change, so update our tracker
-    lastKnownContent = fileContent;
-    
+    if (!network.isConnected()) {
+      console.log(chalk.red('Offline: Changes saved locally and will sync when reconnected'));
+      return;
+    }
+
     const syncSpinner = ora('Encrypting and syncing changes...').start();
     try {
       const encrypted = encryptEnv(fileContent, key);
@@ -79,80 +78,43 @@ export async function initSyncServer({ roomId, key, mode }) {
   network.on('message', async (parsedMessage) => {
     try {
       if (parsedMessage.type === 'request_state') {
-        try {
-          const stats = await fs.stat('.env');
-          const fileContent = await fs.readFile('.env', 'utf8');
-          const encrypted = encryptEnv(fileContent, key);
-          network.send({
-            type: 'sync',
-            roomId,
-            payload: encrypted,
-            timestamp: stats.mtimeMs
-          });
+        const { content, timestamp, created } = await stateManager.getLocalState();
+        const encrypted = encryptEnv(content, key);
+        network.send({
+          type: 'sync',
+          roomId,
+          payload: encrypted,
+          timestamp
+        });
+        
+        if (created) {
+          console.log(chalk.cyan('↑ Created empty .env and synced state to late joiner.'));
+        } else {
           console.log(chalk.cyan('↑ Synced local state to teammate.'));
-        } catch (err) {
-          if (err.code === 'ENOENT') {
-            await fs.writeFile('.env', '', 'utf8');
-            const encrypted = encryptEnv('', key);
-            network.send({
-              type: 'sync',
-              roomId,
-              payload: encrypted,
-              timestamp: Date.now()
-            });
-            console.log(chalk.cyan('↑ Created empty .env and synced state to late joiner.'));
-          } else {
-            console.error(chalk.red('[-] Error reading .env for state request:'), err);
-          }
         }
       } else if (parsedMessage.type === 'update') {
         const encryptedPayload = parsedMessage.payload;
         const decryptedContent = decryptEnv(encryptedPayload, key);
         const incomingTimestamp = parsedMessage.timestamp;
         
-        let localContent = '';
-        let localMtimeMs = 0;
-        try {
-          const stats = await fs.stat('.env');
-          localMtimeMs = stats.mtimeMs;
-          localContent = await fs.readFile('.env', 'utf8');
-        } catch (e) {
-          // File might not exist
-        }
+        const result = await stateManager.evaluateUpdate(decryptedContent, incomingTimestamp);
 
-        // Empty Overwrites Check
-        if (decryptedContent.trim() === '' && localContent.trim() !== '') {
-          console.log(chalk.yellow('⚠ Refusing to overwrite local .env with empty sync. Pushing local changes back...'));
+        if (result.action === 'pushback') {
+          if (result.reason === 'empty_overwrite') {
+            console.log(chalk.yellow('⚠ Refusing to overwrite local .env with empty sync. Pushing local changes back...'));
+          } else if (result.reason === 'footrace') {
+            console.log(chalk.yellow('⚠ Local .env is newer than incoming sync. Pushing local changes back...'));
+          }
+          
           network.send({
             type: 'sync',
             roomId,
-            payload: encryptEnv(localContent, key),
-            timestamp: Date.now()
+            payload: encryptEnv(result.localContent, key),
+            timestamp: result.localTimestamp || Date.now()
           });
-          return;
+        } else if (result.action === 'updated') {
+          console.log(chalk.green('↓ Received and applied remote update.'));
         }
-
-        // The Footrace Check
-        if (incomingTimestamp && localMtimeMs > incomingTimestamp) {
-          console.log(chalk.yellow('⚠ Local .env is newer than incoming sync. Pushing local changes back...'));
-          network.send({
-            type: 'sync',
-            roomId,
-            payload: encryptEnv(localContent, key),
-            timestamp: Date.now()
-          });
-          return;
-        }
-
-        // THE FIX: If what we just received is identical to what we already have, ignore it!
-        if (decryptedContent === lastKnownContent) return;
-
-        // Update our tracker BEFORE writing to the file
-        lastKnownContent = decryptedContent;
-
-        await fs.writeFile('.env', decryptedContent, 'utf8');
-
-        console.log(chalk.green('↓ Received and applied remote update.'));
       }
     } catch (error) {
       console.error(chalk.red('[-] Error processing incoming message:'), error);

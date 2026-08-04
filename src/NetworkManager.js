@@ -77,4 +77,8 @@ export class NetworkManager extends EventEmitter {
       this.emit('error', new Error('WebSocket is not open.'));
     }
   }
+
+  isConnected() {
+    return this.ws !== null && this.ws.readyState === 1;
+  }
 }
