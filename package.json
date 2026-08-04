@@ -4,7 +4,7 @@
   "type": "module",
   "author": "Walsh Francis D'Souza",
   "bin": {
-    "shadow-sync": "./bin/index.js"
+    "env-sync": "./src/cli.js"
   },
   "scripts": {
     "test": "vitest run",

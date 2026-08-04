@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { program } from 'commander';
 import chalk from 'chalk';
 import inquirer from 'inquirer';
@@ -10,13 +11,13 @@ function generateRoomId() {
 }
 
 program
-  .name('shadow-sync')
+  .name('env-sync')
   .description('Real-time, zero-trust E2E encrypted environment variable synchronizer')
   .version('1.0.0');
 
 program
   .command('init')
-  .description('Initialize a new shadow-sync room')
+  .description('Initialize a new env-sync room')
   .action(async () => {
     // Swapped readline for inquirer to get the ****** mask
     const { passphrase } = await inquirer.prompt([
@@ -38,7 +39,7 @@ program
 
 program
   .command('join <roomId>')
-  .description('Join an existing shadow-sync room')
+  .description('Join an existing env-sync room')
   .action(async (roomId) => {
     // Swapped readline for inquirer here too
     const { passphrase } = await inquirer.prompt([
@@ -61,7 +62,7 @@ program
   .action(() => {
     const config = loadConfig();
     if (!config) {
-      console.error(chalk.red('✖ No configuration found. Please run "shadow-sync init" or "shadow-sync join <roomId>" first.'));
+      console.error(chalk.red('✖ No configuration found. Please run "env-sync init" or "env-sync join <roomId>" first.'));
       process.exit(1);
     }
     
@@ -79,11 +80,11 @@ program
 
 program
   .command('start [roomId]')
-  .description('Start the shadow-sync server for a room')
+  .description('Start the env-sync server for a room')
   .action(async (roomId) => {
     if (!roomId) {
       console.error(chalk.red('✖ Error: Missing roomId. Please provide a roomId to start.'));
-      console.log(chalk.yellow('Usage: shadow-sync start <roomId>'));
+      console.log(chalk.yellow('Usage: env-sync start <roomId>'));
       process.exit(1);
     }
     
