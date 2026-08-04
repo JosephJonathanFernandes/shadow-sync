@@ -2,7 +2,21 @@
   "name": "shadow-sync",
   "version": "1.0.0",
   "type": "module",
+  "description": "Real-time, zero-trust E2E encrypted environment variable synchronizer",
   "author": "Walsh Francis D'Souza",
+  "license": "MIT",
+  "keywords": [
+    "env",
+    "sync",
+    "cli",
+    "e2e",
+    "encryption",
+    "websocket"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/walshdsouza/shadow-sync.git"
+  },
   "bin": {
     "env-sync": "./src/cli.js"
   },
