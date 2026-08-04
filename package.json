@@ -14,8 +14,7 @@
     "websocket"
   ],
  "files": [
-    "src",
-    "server"
+    "src"
   ],
   "repository": {
     "type": "git",
@@ -25,8 +24,7 @@
     "env-sync": "./src/cli.js"
   },
   "scripts": {
-    "test": "vitest run",
-    "start": "node server/server.js"
+    "test": "vitest run"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.38.0",
