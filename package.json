@@ -13,6 +13,10 @@
     "encryption",
     "websocket"
   ],
+  "files": [
+    "src",
+    "server.js"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/walshdsouza/shadow-sync.git"
