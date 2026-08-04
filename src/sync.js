@@ -39,7 +39,8 @@ export async function initSyncServer({ roomId, key, mode }) {
         ws.send(JSON.stringify({
           type: 'sync',
           roomId,
-          payload: encrypted
+          payload: encrypted,
+          timestamp: Date.now()
         }));
         syncSpinner.succeed(chalk.green('Changes synced successfully!'));
       } else {
@@ -100,12 +101,14 @@ export async function initSyncServer({ roomId, key, mode }) {
   
         if (parsedMessage.type === 'request_state') {
           try {
+            const stats = await fs.stat('.env');
             const fileContent = await fs.readFile('.env', 'utf8');
             const encrypted = encryptEnv(fileContent, key);
             ws.send(JSON.stringify({
               type: 'sync',
               roomId,
-              payload: encrypted
+              payload: encrypted,
+              timestamp: stats.mtimeMs
             }));
             console.log(chalk.cyan('↑ Synced local state to teammate.'));
           } catch (err) {
@@ -115,7 +118,8 @@ export async function initSyncServer({ roomId, key, mode }) {
               ws.send(JSON.stringify({
                 type: 'sync',
                 roomId,
-                payload: encrypted
+                payload: encrypted,
+                timestamp: Date.now()
               }));
               console.log(chalk.cyan('↑ Created empty .env and synced state to late joiner.'));
             } else {
@@ -125,6 +129,41 @@ export async function initSyncServer({ roomId, key, mode }) {
         } else if (parsedMessage.type === 'update') {
           const encryptedPayload = parsedMessage.payload;
           const decryptedContent = decryptEnv(encryptedPayload, key);
+          const incomingTimestamp = parsedMessage.timestamp;
+          
+          let localContent = '';
+          let localMtimeMs = 0;
+          try {
+            const stats = await fs.stat('.env');
+            localMtimeMs = stats.mtimeMs;
+            localContent = await fs.readFile('.env', 'utf8');
+          } catch (e) {
+            // File might not exist
+          }
+
+          // Empty Overwrites Check
+          if (decryptedContent.trim() === '' && localContent.trim() !== '') {
+            console.log(chalk.yellow('⚠ Refusing to overwrite local .env with empty sync. Pushing local changes back...'));
+            ws.send(JSON.stringify({
+              type: 'sync',
+              roomId,
+              payload: encryptEnv(localContent, key),
+              timestamp: Date.now()
+            }));
+            return;
+          }
+
+          // The Footrace Check
+          if (incomingTimestamp && localMtimeMs > incomingTimestamp) {
+            console.log(chalk.yellow('⚠ Local .env is newer than incoming sync. Pushing local changes back...'));
+            ws.send(JSON.stringify({
+              type: 'sync',
+              roomId,
+              payload: encryptEnv(localContent, key),
+              timestamp: Date.now()
+            }));
+            return;
+          }
   
           // THE FIX: If what we just received is identical to what we already have, ignore it!
           if (decryptedContent === lastKnownContent) return;
