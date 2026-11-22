@@ -4,9 +4,11 @@ export {
   SERVER_URL_ENV_VAR,
   ensureGitignoreProtected,
   isGitignoreProtected,
+  listProfiles,
   loadConfig,
   resolvePassphrase,
   saveConfig,
+  type ProfileConfig,
   type SaveConfigOptions,
   type SaveConfigResult,
   type ShadowSyncConfig,
@@ -22,9 +24,32 @@ export {
   type SyncEnvelope,
 } from './crypto.js';
 export {
+  computeEnvDiff,
+  maskSecretValue,
+  mergeEnvStates,
+  parseEnvValues,
+  renderEnvWithUpdates,
+  stripIgnoredKeys,
+  updateKeyStateMap,
+  type EnvDiffEntry,
+  type KeyEntry,
+  type KeyStateMap,
+  type MergeResult,
+} from './envMerge.js';
+export {
   NetworkManager,
   type NetworkManagerOptions,
 } from './networkManager.js';
+export {
+  pullOnce,
+  pushOnce,
+  rotateRoom,
+  type OneShotOptions,
+  type PullOnceResult,
+  type PushOnceResult,
+  type RotateRoomOptions,
+  type RotateRoomResult,
+} from './operations.js';
 export {
   DEFAULT_RELAY_URL,
   MAX_PAYLOAD_BYTES,

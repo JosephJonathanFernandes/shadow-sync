@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import type { KeyStateMap } from './envMerge.js';
 
 const PBKDF2_ITERATIONS = 600_000;
 const KEY_LENGTH_BYTES = 32;
@@ -8,9 +9,10 @@ const SALT_PREFIX = 'shadow-sync:v1:';
 const ROOM_ID_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // Excludes ambiguous 0/O/1/I
 
 export interface SyncEnvelope {
-  v: 1;
+  v: 1 | 2;
   content: string;
   timestamp: number;
+  keys?: KeyStateMap;
 }
 
 export class DecryptionError extends Error {
@@ -123,26 +125,26 @@ export function decryptEnv(encryptedPayload: string, key: Buffer, aad?: string):
 }
 
 /**
- * Encrypts a versioned SyncEnvelope containing both the .env content and its
- * authoritative LWW timestamp, authenticated with roomId as AAD so the relay
- * server cannot inspect, forge, or cross-room-replay updates.
+ * Encrypts a versioned SyncEnvelope containing the .env content, its
+ * authoritative LWW timestamp, and optional v2 per-key LWW metadata,
+ * authenticated with roomId as AAD so the relay server cannot inspect,
+ * forge, or cross-room-replay updates.
  */
 export function encryptEnvelope(
   content: string,
   timestamp: number,
   key: Buffer,
   roomId: string,
+  keys?: KeyStateMap,
 ): string {
-  const envelope: SyncEnvelope = {
-    v: 1,
-    content,
-    timestamp,
-  };
+  const envelope: SyncEnvelope = keys
+    ? { v: 2, content, timestamp, keys }
+    : { v: 1, content, timestamp };
   return encryptEnv(JSON.stringify(envelope), key, roomId);
 }
 
 /**
- * Decrypts and validates a SyncEnvelope.
+ * Decrypts and validates a v1 or v2 SyncEnvelope.
  */
 export function decryptEnvelope(
   encryptedPayload: string,
@@ -153,17 +155,25 @@ export function decryptEnvelope(
   try {
     const parsed = JSON.parse(raw) as Partial<SyncEnvelope>;
     if (
-      parsed.v !== 1 ||
+      (parsed.v !== 1 && parsed.v !== 2) ||
       typeof parsed.content !== 'string' ||
       typeof parsed.timestamp !== 'number' ||
       !Number.isFinite(parsed.timestamp)
     ) {
       throw new DecryptionError('Malformed sync envelope');
     }
+
+    if (parsed.v === 2 && parsed.keys !== undefined) {
+      if (typeof parsed.keys !== 'object' || parsed.keys === null || Array.isArray(parsed.keys)) {
+        throw new DecryptionError('Malformed v2 key metadata');
+      }
+    }
+
     return {
-      v: 1,
+      v: parsed.v,
       content: parsed.content,
       timestamp: parsed.timestamp,
+      keys: parsed.v === 2 ? parsed.keys : undefined,
     };
   } catch (error) {
     if (error instanceof DecryptionError) {

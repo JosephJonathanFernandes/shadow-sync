@@ -2,7 +2,10 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { loadConfig } from '../src/config.js';
 import { deriveKey } from '../src/crypto.js';
+import { parseEnvValues } from '../src/envMerge.js';
+import { pullOnce, pushOnce, rotateRoom } from '../src/operations.js';
 import { createRelayServer, type RelayServerHandle } from '../src/server.js';
 import { startSyncClient, type SyncClientHandle } from '../src/sync.js';
 
@@ -46,11 +49,16 @@ describe('Shadow-Sync end-to-end integration', () => {
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
 
-  it('serves /health with live room and client counts', async () => {
+  it('serves /health with live room, client, and cachedRooms counts', async () => {
     const res = await fetch(`http://127.0.0.1:${relay.port}/health`);
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { status: string; rooms: number; clients: number };
-    expect(body).toEqual({ status: 'ok', rooms: 0, clients: 0 });
+    const body = (await res.json()) as {
+      status: string;
+      rooms: number;
+      clients: number;
+      cachedRooms: number;
+    };
+    expect(body).toEqual({ status: 'ok', rooms: 0, clients: 0, cachedRooms: 0 });
   });
 
   it('syncs live .env edits between two peers and populates a late cold-start joiner', async () => {
@@ -85,10 +93,8 @@ describe('Shadow-Sync end-to-end integration', () => {
     });
     clients.push(clientB);
 
-    // Peer B should automatically receive Peer A's initial .env
     await waitFor(async () => (await fs.readFile(envB, 'utf8')) === 'INITIAL=fromA\n');
 
-    // Now Peer A edits its .env — Peer B should receive the live update
     await fs.writeFile(envA, 'INITIAL=fromA\nNEW_KEY=live-sync\n', 'utf8');
     await waitFor(
       async () => (await fs.readFile(envB, 'utf8')) === 'INITIAL=fromA\nNEW_KEY=live-sync\n',
@@ -168,15 +174,165 @@ describe('Shadow-Sync end-to-end integration', () => {
 
     await waitFor(async () => (await fs.readFile(envB, 'utf8')) === 'STEP=1\n');
 
-    // Disconnect clientA, make an offline edit, then reconnect
     clientA.network.disconnect();
     await waitFor(() => !clientA.network.isConnected());
 
     await fs.writeFile(envA, 'STEP=2-OFFLINE\n', 'utf8');
     await waitFor(() => clientA.stateManager.hasPendingLocalChanges());
 
-    // Reconnect clientA — its offline change should immediately sync to clientB
     clientA.network.connect();
     await waitFor(async () => (await fs.readFile(envB, 'utf8')) === 'STEP=2-OFFLINE\n');
+  });
+
+  it('supports async offline teams via zero-trust relay cache, one-shot push/pull, and dry-run diff', async () => {
+    const roomId = 'ASYNC-CACHE-1';
+    const key = deriveKey('async-passphrase', roomId);
+
+    const envSender = path.join(tmpDir, 'sender.env');
+    const envReceiver = path.join(tmpDir, 'receiver.env');
+
+    await fs.writeFile(envReceiver, 'PORT=4000\nDB=old_pg\n', 'utf8');
+    const olderTime = (Date.now() - 5_000) / 1000;
+    await fs.utimes(envReceiver, olderTime, olderTime);
+    await fs.writeFile(envSender, 'PORT=3001\nAPI_TOKEN=secret_abc\nDB=pg\n', 'utf8');
+
+    // Sender pushes once (ignoring PORT) and disconnects completely
+    const pushRes = await pushOnce({
+      roomId,
+      key,
+      filePath: envSender,
+      wsUrl: relay.url,
+      ignoreKeys: ['PORT'],
+    });
+    expect(pushRes.keyCount).toBe(2);
+    expect(relay.getStats().cachedRooms).toBe(1);
+    expect(relay.getStats().clients).toBe(0);
+
+    // Receiver previews diff (dryRun) while 0 other peers are online
+    const diffRes = await pullOnce({
+      roomId,
+      key,
+      filePath: envReceiver,
+      wsUrl: relay.url,
+      ignoreKeys: ['PORT'],
+      dryRun: true,
+    });
+    expect(diffRes.received).toBe(true);
+    expect(diffRes.applied).toBe(false);
+    expect(diffRes.diffs.map((d) => `${d.kind}:${d.key}`)).toEqual([
+      'added:API_TOKEN',
+      'modified:DB',
+    ]);
+    // Dry run must not touch local file
+    expect(await fs.readFile(envReceiver, 'utf8')).toBe('PORT=4000\nDB=old_pg\n');
+
+    // Receiver pulls for real — merges API_TOKEN & DB while preserving local PORT=4000
+    const pullRes = await pullOnce({
+      roomId,
+      key,
+      filePath: envReceiver,
+      wsUrl: relay.url,
+      ignoreKeys: ['PORT'],
+    });
+    expect(pullRes.received).toBe(true);
+    expect(pullRes.applied).toBe(true);
+    expect(parseEnvValues(await fs.readFile(envReceiver, 'utf8'))).toEqual({
+      PORT: '4000',
+      DB: 'pg',
+      API_TOKEN: 'secret_abc',
+    });
+  });
+
+  it('merges concurrent edits to different keys between peers without data loss', async () => {
+    const roomId = 'CRDT-MERGE-1';
+    const key = deriveKey('crdt-passphrase', roomId);
+
+    const envA = path.join(tmpDir, 'crdtA.env');
+    const envB = path.join(tmpDir, 'crdtB.env');
+
+    await fs.writeFile(envA, 'BASE=1\n', 'utf8');
+
+    const clientA = await startSyncClient({
+      roomId,
+      key,
+      filePath: envA,
+      wsUrl: relay.url,
+      silent: true,
+      debounceMs: 50,
+    });
+    clients.push(clientA);
+
+    const clientB = await startSyncClient({
+      roomId,
+      key,
+      filePath: envB,
+      wsUrl: relay.url,
+      silent: true,
+      debounceMs: 50,
+    });
+    clients.push(clientB);
+
+    await waitFor(async () => (await fs.readFile(envB, 'utf8')) === 'BASE=1\n');
+
+    // Disconnect B so A and B make concurrent offline edits to DIFFERENT keys
+    clientB.network.disconnect();
+    await waitFor(() => !clientB.network.isConnected());
+
+    await fs.writeFile(envA, 'BASE=1\nFROM_A=alpha\n', 'utf8');
+    await waitFor(() => 'FROM_A' in clientA.stateManager.getKeyState());
+
+    await fs.writeFile(envB, 'BASE=1\nFROM_B=beta\n', 'utf8');
+    await waitFor(() => clientB.stateManager.hasPendingLocalChanges());
+
+    // Reconnect B — both A and B should converge to having BASE, FROM_A, AND FROM_B
+    clientB.network.connect();
+
+    await waitFor(async () => {
+      const valsA = parseEnvValues(await fs.readFile(envA, 'utf8'));
+      const valsB = parseEnvValues(await fs.readFile(envB, 'utf8'));
+      return (
+        valsA.FROM_A === 'alpha' &&
+        valsA.FROM_B === 'beta' &&
+        valsB.FROM_A === 'alpha' &&
+        valsB.FROM_B === 'beta'
+      );
+    });
+  });
+
+  it('rotates room credentials, updates config, and pushes re-encrypted state to the new room', async () => {
+    const projectDir = path.join(tmpDir, 'rotate-proj');
+    await fs.mkdir(projectDir, { recursive: true });
+    const envFile = path.join(projectDir, '.env');
+    await fs.writeFile(envFile, 'ROTATED_SECRET=top-secret\n', 'utf8');
+
+    const res = await rotateRoom({
+      newPassphrase: 'brand-new-passphrase',
+      filePath: envFile,
+      wsUrl: relay.url,
+      cwd: projectDir,
+      profile: 'staging',
+    });
+
+    expect(res.pushed).toBe(true);
+    expect(res.keyCount).toBe(1);
+
+    const saved = loadConfig(projectDir, 'staging');
+    expect(saved?.roomId).toBe(res.newRoomId);
+    expect(saved?.passphrase).toBe('brand-new-passphrase');
+
+    // Teammate joins the new room and pulls the rotated secret immediately
+    const teammateEnv = path.join(tmpDir, 'teammate.env');
+    const newKey = deriveKey('brand-new-passphrase', res.newRoomId);
+    const pull = await pullOnce({
+      roomId: res.newRoomId,
+      key: newKey,
+      filePath: teammateEnv,
+      wsUrl: relay.url,
+    });
+    expect(pull.received).toBe(true);
+    expect(pull.applied).toBe(true);
+    expect(parseEnvValues(await fs.readFile(teammateEnv, 'utf8'))).toEqual({
+      ROTATED_SECRET: 'top-secret',
+    });
   });
 });

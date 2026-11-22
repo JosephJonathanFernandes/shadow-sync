@@ -6,6 +6,7 @@ import {
   CONFIG_FILE,
   PASSPHRASE_ENV_VAR,
   isGitignoreProtected,
+  listProfiles,
   loadConfig,
   resolvePassphrase,
   saveConfig,
@@ -93,5 +94,33 @@ describe('config', () => {
     delete process.env[PASSPHRASE_ENV_VAR];
     expect(resolvePassphrase({ roomId: 'R1', passphrase: 'from-config' })).toBe('from-config');
     expect(resolvePassphrase({ roomId: 'R1' })).toBeUndefined();
+  });
+
+  it('supports named multi-environment profiles and ignoreKeys', () => {
+    saveConfig('DEV-ROOM', 'dev-pass', {
+      cwd: tmpDir,
+      ignoreKeys: ['PORT', 'LOCAL_DEBUG'],
+    });
+    saveConfig('STAGING-ROOM', 'staging-pass', {
+      cwd: tmpDir,
+      profile: 'staging',
+      file: '.env.staging',
+      ignoreKeys: ['DEBUG'],
+    });
+
+    expect(listProfiles(tmpDir)).toEqual(['staging']);
+    expect(loadConfig(tmpDir)?.roomId).toBe('DEV-ROOM');
+    expect(loadConfig(tmpDir)?.ignoreKeys).toEqual(['PORT', 'LOCAL_DEBUG']);
+
+    const staging = loadConfig(tmpDir, 'staging');
+    expect(staging).toEqual({
+      roomId: 'STAGING-ROOM',
+      passphrase: 'staging-pass',
+      file: '.env.staging',
+      serverUrl: undefined,
+      ignoreKeys: ['DEBUG'],
+    });
+
+    expect(() => loadConfig(tmpDir, 'nonexistent')).toThrow();
   });
 });

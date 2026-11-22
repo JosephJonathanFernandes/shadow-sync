@@ -1,6 +1,6 @@
 {
   "name": "shadow-sync",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "type": "module",
   "description": "Real-time, zero-trust E2E encrypted environment variable synchronizer",
   "author": "Walsh Francis D'Souza",

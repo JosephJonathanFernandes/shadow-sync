@@ -5,11 +5,16 @@ export const CONFIG_FILE = '.shadow-sync.json';
 export const PASSPHRASE_ENV_VAR = 'SHADOW_SYNC_PASSPHRASE';
 export const SERVER_URL_ENV_VAR = 'SYNC_WS_URL';
 
-export interface ShadowSyncConfig {
+export interface ProfileConfig {
   roomId: string;
   passphrase?: string;
   file?: string;
   serverUrl?: string;
+  ignoreKeys?: string[];
+}
+
+export interface ShadowSyncConfig extends ProfileConfig {
+  profiles?: Record<string, ProfileConfig>;
 }
 
 export interface SaveConfigOptions {
@@ -17,6 +22,8 @@ export interface SaveConfigOptions {
   savePassphrase?: boolean;
   file?: string;
   serverUrl?: string;
+  ignoreKeys?: string[];
+  profile?: string;
 }
 
 export interface SaveConfigResult {
@@ -67,9 +74,31 @@ export function isGitignoreProtected(cwd: string = process.cwd()): boolean {
     .includes(CONFIG_FILE);
 }
 
+function buildProfileEntry(
+  roomId: string,
+  passphrase: string | undefined,
+  options: SaveConfigOptions,
+): ProfileConfig {
+  const savePassphrase = options.savePassphrase ?? true;
+  const entry: ProfileConfig = { roomId };
+  if (savePassphrase && passphrase !== undefined) {
+    entry.passphrase = passphrase;
+  }
+  if (options.file && options.file !== '.env') {
+    entry.file = options.file;
+  }
+  if (options.serverUrl) {
+    entry.serverUrl = options.serverUrl;
+  }
+  if (options.ignoreKeys && options.ignoreKeys.length > 0) {
+    entry.ignoreKeys = [...new Set(options.ignoreKeys.map((k) => k.trim()).filter(Boolean))];
+  }
+  return entry;
+}
+
 /**
  * Saves room configuration to .shadow-sync.json with owner-only permissions (0600)
- * and guarantees .gitignore protection.
+ * and guarantees .gitignore protection. Supports named multi-environment profiles.
  */
 export function saveConfig(
   roomId: string,
@@ -77,26 +106,38 @@ export function saveConfig(
   options: SaveConfigOptions = {},
 ): SaveConfigResult {
   const cwd = options.cwd ?? process.cwd();
-  const savePassphrase = options.savePassphrase ?? true;
   const configPath = path.join(cwd, CONFIG_FILE);
 
-  const data: ShadowSyncConfig = { roomId };
-  if (savePassphrase && passphrase !== undefined) {
-    data.passphrase = passphrase;
-  }
-  if (options.file && options.file !== '.env') {
-    data.file = options.file;
-  }
-  if (options.serverUrl) {
-    data.serverUrl = options.serverUrl;
+  let existing: Partial<ShadowSyncConfig> = {};
+  if (fs.existsSync(configPath)) {
+    try {
+      existing = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Partial<ShadowSyncConfig>;
+    } catch {
+      existing = {};
+    }
   }
 
-  fs.writeFileSync(configPath, `${JSON.stringify(data, null, 2)}\n`, {
+  const entry = buildProfileEntry(roomId, passphrase, options);
+  let nextConfig: Partial<ShadowSyncConfig>;
+
+  if (options.profile) {
+    const profiles = { ...(existing.profiles ?? {}), [options.profile]: entry };
+    nextConfig = {
+      ...existing,
+      profiles,
+    };
+  } else {
+    nextConfig = {
+      ...entry,
+      ...(existing.profiles ? { profiles: existing.profiles } : {}),
+    };
+  }
+
+  fs.writeFileSync(configPath, `${JSON.stringify(nextConfig, null, 2)}\n`, {
     encoding: 'utf8',
     mode: 0o600,
   });
 
-  // Explicitly enforce 0600 even if the file already existed with wider permissions
   try {
     fs.chmodSync(configPath, 0o600);
   } catch {
@@ -112,11 +153,29 @@ export function saveConfig(
   };
 }
 
+function normalizeProfile(raw: Partial<ProfileConfig>, label: string): ProfileConfig {
+  if (typeof raw.roomId !== 'string' || raw.roomId.trim() === '') {
+    throw new Error(`Invalid ${CONFIG_FILE} (${label}): missing or empty "roomId"`);
+  }
+  return {
+    roomId: raw.roomId,
+    passphrase: typeof raw.passphrase === 'string' ? raw.passphrase : undefined,
+    file: typeof raw.file === 'string' ? raw.file : undefined,
+    serverUrl: typeof raw.serverUrl === 'string' ? raw.serverUrl : undefined,
+    ignoreKeys: Array.isArray(raw.ignoreKeys)
+      ? raw.ignoreKeys.filter((k): k is string => typeof k === 'string' && k.trim().length > 0)
+      : undefined,
+  };
+}
+
 /**
  * Loads .shadow-sync.json from the specified directory (defaults to CWD).
- * Returns null if the config file does not exist.
+ * If `profile` is provided, resolves that named profile from `profiles[profile]`.
  */
-export function loadConfig(cwd: string = process.cwd()): ShadowSyncConfig | null {
+export function loadConfig(
+  cwd: string = process.cwd(),
+  profile?: string,
+): ProfileConfig | null {
   const configPath = path.join(cwd, CONFIG_FILE);
   if (!fs.existsSync(configPath)) {
     return null;
@@ -125,22 +184,33 @@ export function loadConfig(cwd: string = process.cwd()): ShadowSyncConfig | null
   const raw = fs.readFileSync(configPath, 'utf8');
   const parsed = JSON.parse(raw) as Partial<ShadowSyncConfig>;
 
-  if (typeof parsed.roomId !== 'string' || parsed.roomId.trim() === '') {
-    throw new Error(`Invalid ${CONFIG_FILE}: missing or empty "roomId"`);
+  if (profile) {
+    const profileEntry = parsed.profiles?.[profile];
+    if (!profileEntry) {
+      throw new Error(`Profile "${profile}" not found in ${CONFIG_FILE}`);
+    }
+    return normalizeProfile(profileEntry, `profile "${profile}"`);
   }
 
-  return {
-    roomId: parsed.roomId,
-    passphrase: typeof parsed.passphrase === 'string' ? parsed.passphrase : undefined,
-    file: typeof parsed.file === 'string' ? parsed.file : undefined,
-    serverUrl: typeof parsed.serverUrl === 'string' ? parsed.serverUrl : undefined,
-  };
+  return normalizeProfile(parsed, 'default');
+}
+
+/**
+ * Lists all named profile keys defined in .shadow-sync.json.
+ */
+export function listProfiles(cwd: string = process.cwd()): string[] {
+  const configPath = path.join(cwd, CONFIG_FILE);
+  if (!fs.existsSync(configPath)) {
+    return [];
+  }
+  const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Partial<ShadowSyncConfig>;
+  return parsed.profiles ? Object.keys(parsed.profiles).sort() : [];
 }
 
 /**
  * Resolves the passphrase from environment variable first, then config.
  */
-export function resolvePassphrase(config?: ShadowSyncConfig | null): string | undefined {
+export function resolvePassphrase(config?: ProfileConfig | null): string | undefined {
   const fromEnv = process.env[PASSPHRASE_ENV_VAR];
   if (fromEnv && fromEnv.length > 0) {
     return fromEnv;
