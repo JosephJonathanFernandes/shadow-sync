@@ -5,6 +5,9 @@
   "description": "Real-time, zero-trust E2E encrypted environment variable synchronizer",
   "author": "Walsh Francis D'Souza",
   "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "keywords": [
     "env",
     "sync",
@@ -13,30 +16,42 @@
     "encryption",
     "websocket"
   ],
- "files": [
-    "src"
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
   ],
   "repository": {
     "type": "git",
     "url": "https://github.com/walshdsouza/shadow-sync.git"
   },
   "bin": {
-    "env-sync": "./src/cli.js"
+    "env-sync": "./dist/cli.js"
   },
   "scripts": {
-    "test": "vitest run"
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "dev": "tsx src/cli.ts",
+    "server": "tsx src/server.ts",
+    "prepublishOnly": "npm run clean && npm run build && npm test"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.38.0",
     "chalk": "^5.6.2",
-    "chokidar": "^3.6.0",
-    "commander": "^11.1.0",
-    "dotenv": "^16.3.1",
-    "inquirer": "^14.0.2",
-    "ora": "^7.0.1",
-    "ws": "^8.21.1"
+    "chokidar": "^4.0.3",
+    "commander": "^12.1.0",
+    "inquirer": "^12.6.3",
+    "ora": "^8.2.0",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
-    "vitest": "^0.34.6"
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.5"
   }
 }
