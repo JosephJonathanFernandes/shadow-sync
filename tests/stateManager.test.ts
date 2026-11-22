@@ -89,8 +89,8 @@ describe('StateManager', () => {
     await sm.getLocalState();
 
     expect(sm.hasPendingLocalChanges()).toBe(false);
-    const ts = sm.trackLocalUpdate('A=2\n', true);
-    expect(ts).toBeGreaterThan(0);
+    const tracked = sm.trackLocalUpdate('A=2\n', true);
+    expect(tracked?.timestamp).toBeGreaterThan(0);
     expect(sm.hasPendingLocalChanges()).toBe(true);
 
     sm.clearPendingLocalChanges();

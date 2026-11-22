@@ -5,6 +5,7 @@ import {
   decryptEnvelope,
   encryptEnvelope,
 } from './crypto.js';
+import type { KeyStateMap } from './envMerge.js';
 import {
   NetworkManager,
   type NetworkManagerOptions,
@@ -19,6 +20,7 @@ export interface SyncClientOptions {
   key: Buffer;
   filePath?: string;
   wsUrl?: string;
+  ignoreKeys?: readonly string[];
   silent?: boolean;
   debounceMs?: number;
   networkOptions?: NetworkManagerOptions;
@@ -39,13 +41,14 @@ export async function startSyncClient(
     roomId,
     key,
     filePath = '.env',
+    ignoreKeys = [],
     silent = false,
     debounceMs,
     networkOptions,
   } = options;
 
   const wsUrl = options.wsUrl || process.env[SERVER_URL_ENV_VAR] || DEFAULT_RELAY_URL;
-  const stateManager = new StateManager(filePath);
+  const stateManager = new StateManager(filePath, ignoreKeys);
 
   const log = (msg: string) => {
     if (!silent) console.log(msg);
@@ -58,6 +61,9 @@ export async function startSyncClient(
   if (created) {
     log(chalk.yellow(`Created empty ${filePath} for cold start.`));
   }
+  if (ignoreKeys.length > 0) {
+    log(chalk.dim(`ℹ Local-only ignored keys: ${ignoreKeys.join(', ')}`));
+  }
 
   const network = new NetworkManager(wsUrl, roomId, networkOptions);
   let spinner: Ora | null = silent
@@ -65,8 +71,12 @@ export async function startSyncClient(
     : ora(`Connecting to Sync Server (${wsUrl})...`).start();
   let isOffline = false;
 
-  const broadcastState = (content: string, timestamp: number): boolean => {
-    const payload = encryptEnvelope(content, timestamp, key, roomId);
+  const broadcastState = (
+    content: string,
+    timestamp: number,
+    keys: KeyStateMap,
+  ): boolean => {
+    const payload = encryptEnvelope(content, timestamp, key, roomId, keys);
     return network.send({
       type: 'sync',
       roomId,
@@ -79,8 +89,8 @@ export async function startSyncClient(
   const watcher: FileWatcherHandle = startWatching(
     (fileContent) => {
       const connected = network.isConnected();
-      const timestamp = stateManager.trackLocalUpdate(fileContent, !connected);
-      if (timestamp === null) return;
+      const tracked = stateManager.trackLocalUpdate(fileContent, !connected);
+      if (tracked === null) return;
 
       if (!connected) {
         log(chalk.yellow('Offline: changes saved locally and will sync upon reconnect.'));
@@ -89,7 +99,7 @@ export async function startSyncClient(
 
       const syncSpinner = silent ? null : ora('Encrypting and syncing changes...').start();
       try {
-        broadcastState(fileContent, timestamp);
+        broadcastState(tracked.broadcastContent, tracked.timestamp, tracked.keys);
         syncSpinner?.succeed(chalk.green('Changes encrypted and synced!'));
       } catch (err) {
         syncSpinner?.fail(chalk.red('Failed to sync changes.'));
@@ -115,11 +125,11 @@ export async function startSyncClient(
     }
     log(chalk.cyan(`Joined room: ${roomId}`));
 
-    // If local edits were made while offline, push them immediately so LWW reconciles
+    // If local edits were made while offline, push them immediately so LWW CRDT merges
     if (stateManager.hasPendingLocalChanges()) {
       try {
         const local = await stateManager.getLocalState();
-        if (broadcastState(local.content, local.timestamp)) {
+        if (broadcastState(local.broadcastContent, local.timestamp, local.keys)) {
           stateManager.clearPendingLocalChanges();
           log(chalk.cyan('↑ Pushed pending offline changes after reconnect.'));
         }
@@ -157,7 +167,11 @@ export async function startSyncClient(
     try {
       if (message.type === 'peer_count') {
         const others = Math.max(0, message.count - 1);
-        log(chalk.dim(`ℹ Room ${message.roomId}: ${others} other peer${others === 1 ? '' : 's'} online`));
+        log(
+          chalk.dim(
+            `ℹ Room ${message.roomId}: ${others} other peer${others === 1 ? '' : 's'} online`,
+          ),
+        );
         return;
       }
 
@@ -167,12 +181,11 @@ export async function startSyncClient(
       }
 
       if (message.type === 'request_state') {
-        const { content, timestamp } = await stateManager.getLocalState();
-        // Do not broadcast empty state on request_state — avoids unnecessary empty pushbacks
-        if (content.trim() === '') {
+        const local = await stateManager.getLocalState();
+        if (local.broadcastContent.trim() === '') {
           return;
         }
-        broadcastState(content, timestamp);
+        broadcastState(local.broadcastContent, local.timestamp, local.keys);
         log(chalk.cyan('↑ Synced encrypted local state to peer.'));
         return;
       }
@@ -182,6 +195,7 @@ export async function startSyncClient(
         const result = await stateManager.evaluateUpdate(
           envelope.content,
           envelope.timestamp,
+          envelope.keys,
         );
 
         if (result.action === 'pushback') {
@@ -191,14 +205,21 @@ export async function startSyncClient(
                 `⚠ Refusing to overwrite ${filePath} with empty sync. Pushing local state back...`,
               ),
             );
+          } else if (result.reason === 'merged_conflict') {
+            log(
+              chalk.cyan(
+                `⇄ Merged concurrent edits in ${filePath}. Pushing reconciled state back...`,
+              ),
+            );
+            options.onUpdateApplied?.(result.localContent);
           } else {
             log(
               chalk.yellow(
-                `⚠ Local ${filePath} is newer than incoming sync. Pushing local state back...`,
+                `⚠ Local ${filePath} has newer keys than incoming sync. Pushing local state back...`,
               ),
             );
           }
-          broadcastState(result.localContent, result.localTimestamp);
+          broadcastState(result.localContent, result.localTimestamp, result.localKeys);
         } else if (result.action === 'updated') {
           log(chalk.green(`↓ Received and applied remote update to ${filePath}.`));
           options.onUpdateApplied?.(envelope.content);

@@ -12,11 +12,21 @@ interface TrackedSocket extends WebSocket {
   currentRoom: string | null;
 }
 
+interface RoomSnapshot {
+  payload: string;
+  timestamp: number;
+  cachedAt: number;
+}
+
 export interface RelayServerOptions {
   port?: number;
   host?: string;
   heartbeatIntervalMs?: number;
   maxPayloadBytes?: number;
+  /** How long opaque encrypted room snapshots are retained in memory (default: 24h). Set 0 to disable. */
+  snapshotTtlMs?: number;
+  /** Maximum number of rooms to retain in the LRU snapshot cache (default: 500). */
+  maxCachedRooms?: number;
   logger?: Pick<Console, 'log' | 'error'>;
 }
 
@@ -25,13 +35,17 @@ export interface RelayServerHandle {
   wss: WebSocketServer;
   port: number;
   url: string;
-  getStats: () => { rooms: number; clients: number };
+  getStats: () => { rooms: number; clients: number; cachedRooms: number };
   close: () => Promise<void>;
 }
 
+const DEFAULT_SNAPSHOT_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const DEFAULT_MAX_CACHED_ROOMS = 500;
+
 /**
  * Starts a zero-trust Shadow-Sync WebSocket relay server with HTTP /health
- * endpoint, payload size limits, room cleanup, and dead-peer eviction.
+ * endpoint, payload size limits, room cleanup, dead-peer eviction, and an
+ * optional zero-trust encrypted snapshot cache (TTL + LRU) for async teams.
  */
 export async function createRelayServer(
   options: RelayServerOptions = {},
@@ -40,9 +54,58 @@ export async function createRelayServer(
   const requestedPort = options.port ?? Number(process.env.PORT ?? 8080);
   const heartbeatIntervalMs = options.heartbeatIntervalMs ?? 30_000;
   const maxPayload = options.maxPayloadBytes ?? MAX_PAYLOAD_BYTES;
+  const snapshotTtlMs = options.snapshotTtlMs ?? DEFAULT_SNAPSHOT_TTL_MS;
+  const maxCachedRooms = options.maxCachedRooms ?? DEFAULT_MAX_CACHED_ROOMS;
   const logger = options.logger ?? console;
 
   const rooms = new Map<string, Set<TrackedSocket>>();
+  const snapshots = new Map<string, RoomSnapshot>();
+
+  const pruneExpiredSnapshots = (): void => {
+    if (snapshotTtlMs <= 0) {
+      snapshots.clear();
+      return;
+    }
+    const now = Date.now();
+    for (const [roomId, snap] of snapshots) {
+      if (now - snap.cachedAt > snapshotTtlMs) {
+        snapshots.delete(roomId);
+      }
+    }
+  };
+
+  const setSnapshot = (roomId: string, payload: string, timestamp: number): void => {
+    if (snapshotTtlMs <= 0 || maxCachedRooms <= 0) return;
+
+    // Refresh LRU position by deleting and re-inserting
+    if (snapshots.has(roomId)) {
+      snapshots.delete(roomId);
+    }
+    snapshots.set(roomId, { payload, timestamp, cachedAt: Date.now() });
+
+    while (snapshots.size > maxCachedRooms) {
+      const oldestKey = snapshots.keys().next().value;
+      if (oldestKey !== undefined) {
+        snapshots.delete(oldestKey);
+      } else {
+        break;
+      }
+    }
+  };
+
+  const getSnapshot = (roomId: string): RoomSnapshot | null => {
+    if (snapshotTtlMs <= 0) return null;
+    const snap = snapshots.get(roomId);
+    if (!snap) return null;
+    if (Date.now() - snap.cachedAt > snapshotTtlMs) {
+      snapshots.delete(roomId);
+      return null;
+    }
+    // Touch LRU position
+    snapshots.delete(roomId);
+    snapshots.set(roomId, snap);
+    return snap;
+  };
 
   const sendMessage = (client: WebSocket, msg: ServerMessage): void => {
     if (client.readyState === WebSocket.OPEN) {
@@ -69,7 +132,7 @@ export async function createRelayServer(
       logger.log(`[-] Client left room: ${roomId} (${clients.size} remaining)`);
       if (clients.size === 0) {
         rooms.delete(roomId);
-        logger.log(`[!] Room ${roomId} is empty and has been destroyed.`);
+        logger.log(`[!] Room ${roomId} is empty.`);
       } else {
         broadcastPeerCount(roomId);
       }
@@ -79,10 +142,12 @@ export async function createRelayServer(
 
   const server = http.createServer((req, res) => {
     if (req.url === '/health' && req.method === 'GET') {
+      pruneExpiredSnapshots();
       const body = JSON.stringify({
         status: 'ok',
         rooms: rooms.size,
         clients: wss.clients.size,
+        cachedRooms: snapshots.size,
       });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(body);
@@ -139,6 +204,7 @@ export async function createRelayServer(
 
       if (message.type === 'sync') {
         logger.log(`[*] Broadcasting update in room: ${ws.currentRoom}`);
+        setSnapshot(ws.currentRoom, message.payload, message.timestamp);
         for (const client of clients) {
           if (client !== ws) {
             sendMessage(client, {
@@ -152,7 +218,17 @@ export async function createRelayServer(
       }
 
       if (message.type === 'request_state') {
-        logger.log(`[*] Forwarding state request in room: ${ws.currentRoom}`);
+        logger.log(`[*] Handling state request in room: ${ws.currentRoom}`);
+        // Serve cached opaque encrypted snapshot immediately for async/offline teams
+        const cached = getSnapshot(ws.currentRoom);
+        if (cached) {
+          sendMessage(ws, {
+            type: 'update',
+            payload: cached.payload,
+            timestamp: cached.timestamp,
+          });
+        }
+        // Also forward to online peers in case they hold fresher state
         for (const client of clients) {
           if (client !== ws) {
             sendMessage(client, {
@@ -175,6 +251,7 @@ export async function createRelayServer(
   });
 
   const heartbeatTimer = setInterval(() => {
+    pruneExpiredSnapshots();
     for (const rawWs of wss.clients) {
       const ws = rawWs as TrackedSocket;
       if (!ws.isAlive) {
@@ -209,10 +286,14 @@ export async function createRelayServer(
     wss,
     port: boundPort,
     url: `ws://${connectHost}:${boundPort}`,
-    getStats: () => ({
-      rooms: rooms.size,
-      clients: wss.clients.size,
-    }),
+    getStats: () => {
+      pruneExpiredSnapshots();
+      return {
+        rooms: rooms.size,
+        clients: wss.clients.size,
+        cachedRooms: snapshots.size,
+      };
+    },
     close: async () => {
       clearInterval(heartbeatTimer);
       for (const client of wss.clients) {
@@ -224,7 +305,6 @@ export async function createRelayServer(
   };
 }
 
-// Allow running directly via `tsx src/server.ts` or `node dist/server.js`
 const isDirectExecution =
   process.argv[1] !== undefined &&
   import.meta.url === pathToFileURL(process.argv[1]).href;
