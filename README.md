@@ -1,69 +1,115 @@
-# 🕵️‍♂️ Env-Sync (Shadow-Sync)
+# Shadow-Sync (`env-sync`)
 
-**Real-time, zero-trust E2E encrypted environment variable synchronizer.**
+**Real-time, zero-trust, end-to-end encrypted `.env` synchronizer for development teams.**
 
-Tired of securely sharing `.env` files with your team by copy-pasting over Slack or sharing brittle passwords? Env-Sync is a CLI tool that allows developers to seamlessly synchronize their `.env` files in real-time across a shared development room. It utilizes **zero-trust End-to-End (E2E) encryption** and robust **Last-Write-Wins (LWW) conflict resolution** to ensure your local environments are perfectly synced, securely, and without race conditions.
+Stop pasting secrets over Slack or managing brittle shared `.env` files. Shadow-Sync keeps your team's local `.env` files synchronized in real time over a zero-trust WebSocket relay using **AES-256-GCM** encryption, **PBKDF2-SHA256** key derivation, and **Last-Write-Wins (LWW)** conflict resolution.
 
-## 📋 Prerequisites
+## Prerequisites
 
-Ensure you have **Node.js (v16 or higher)** installed on your system before proceeding.
+- **Node.js v18 or higher**
 
-## 📦 Installation
+## Installation
 
-Install the package globally using npm to access the `env-sync` command from anywhere:
+Install globally via npm to use the `env-sync` CLI anywhere:
 
 ```bash
 npm install -g shadow-sync
 ```
 
-*(Alternatively, if you've cloned the repository, you can run `npm link` in the project root to install it locally).*
+Or from a local clone:
 
-## 🚀 Usage
+```bash
+npm install
+npm run build
+npm link
+```
 
-Env-Sync provides a simple, intuitive CLI to manage your synchronization rooms.
+## Usage
 
-**Important:** All commands must be run from the **root folder of your project**, as Env-Sync strictly targets the `.env` file in your Current Working Directory (CWD).
+Run commands from the root directory of your project. By default, `env-sync` targets `.env` in the current working directory (override with `-f, --file <path>`).
 
-> **Missing File?** If you run `join` or `start` in a directory that doesn't have a `.env` file yet, Env-Sync will automatically create a new `.env` file for you and gracefully populate it with the remote state from your team!
+> **Cold Start:** If you run `watch` or `start` in a directory without a `.env` file, Shadow-Sync creates one automatically and populates it from your online teammates.
 
 ### 1. Initialize a New Room
-Create a brand new room to start syncing your `.env` file. You will be prompted to create a secure passphrase.
+
+Creates a cryptographically secure Room ID (e.g. `A7K9-M2P4-X8Q3`), saves `.shadow-sync.json` with `0600` (owner-only) permissions, and automatically ensures `.shadow-sync.json` is listed in `.gitignore`.
 
 ```bash
 env-sync init
 ```
-*Output: Provides you with a unique Room ID to share with your team.*
+
+Options:
+- `-f, --file <path>` — Target env file path (default: `.env`)
+- `-u, --url <wsUrl>` — Custom relay WebSocket URL
+- `--no-save-passphrase` — Do not write the passphrase to `.shadow-sync.json` (prompt at runtime or read from `SHADOW_SYNC_PASSPHRASE`)
 
 ### 2. Join an Existing Room
-Join a teammate's room using their Room ID. You will be prompted to enter the room's secure passphrase.
 
 ```bash
 env-sync join <roomId>
 ```
-*Example: `env-sync join X7B9A2`*
 
-### 3. Start the Sync Server (Direct)
-Directly start the synchronization server for a specific room. This will connect to the room and immediately sync your local `.env` state.
+Supports the same `-f`, `-u`, and `--no-save-passphrase` options as `init`.
 
-```bash
-env-sync start <roomId>
-```
-*Example: `env-sync start X7B9A2`*
+### 3. Watch and Sync
 
-### 4. Watch for Changes (Background)
-Once you have initialized or joined a room, run the watcher. It will continuously monitor your `.env` file and instantly push any local changes to your team, as well as apply incoming changes from them.
+Starts the file watcher and connects to the relay server using `.shadow-sync.json`:
 
 ```bash
 env-sync watch
 ```
 
-*To safely stop the watcher and disconnect from the server, simply press `Ctrl + C` in your terminal.*
+Press `Ctrl + C` for a clean shutdown.
 
-## 🏗️ Architecture
+### 4. Direct Start (No Config File)
 
-Env-Sync is built with privacy and security as its absolute core principles:
+Connect to a room directly without writing `.shadow-sync.json`:
 
-- **Zero-Trust Server:** The synchronization runs over a fast WebSocket server. However, the server acts *only* as a dumb relay. It routes messages between peers but cannot read them.
-- **Client-Side E2E Encryption:** All `.env` contents are encrypted locally on your machine using **AES-256-GCM** encryption before ever hitting the network. 
-- **Secure Key Derivation:** The encryption key is derived securely from your Room ID and the Passphrase (which is never transmitted). Without the passphrase, the payload is cryptographically impossible to read.
-- **Robust State Management:** Implements Last-Write-Wins (LWW) timestamps and empty-overwrite protections to gracefully handle offline modifications, sudden disconnects, and simultaneous teammate edits.
+```bash
+env-sync start <roomId>
+```
+
+### 5. Inspect Status
+
+Check your active room configuration, target file, relay URL, and `.gitignore` protection:
+
+```bash
+env-sync status
+```
+
+### 6. Self-Host the Relay Server
+
+Run your own zero-trust relay server directly from the CLI:
+
+```bash
+env-sync server --port 8080
+```
+
+A health check endpoint is exposed at `GET /health` returning `{ "status": "ok", "rooms": ..., "clients": ... }`.
+
+You can also deploy the standalone [`server/`](./server) directory directly to Render, Railway, or Fly.io (`npm install && npm start`).
+
+## Environment Variables
+
+| Variable | Description |
+| --- | --- |
+| `SHADOW_SYNC_PASSPHRASE` | Supplies the room passphrase without storing it on disk or prompting interactively |
+| `SYNC_WS_URL` | Overrides the default relay WebSocket URL (`wss://shadow-sync.onrender.com`) |
+| `PORT` | Port used by the relay server (default: `8080`) |
+
+## Security & Architecture
+
+- **Zero-Trust Relay:** The WebSocket relay routes opaque ciphertext between room peers. It enforces payload size limits (1 MiB), validates room IDs, and evicts stale connections via ping/pong heartbeats, but never sees your passphrase or plaintext secrets.
+- **Authenticated Encryption (AES-256-GCM):** Every sync update wraps both the `.env` content and its LWW timestamp inside a JSON envelope encrypted with a random 96-bit IV and bound to the `roomId` via Additional Authenticated Data (AAD), preventing tampering and cross-room replay.
+- **Key Derivation:** 256-bit keys are derived locally with PBKDF2-HMAC-SHA256 (600,000 iterations) using a domain-separated room salt.
+- **Resilient State Reconciliation:** Uses atomic file writes, echo suppression, cold-start protection, empty-overwrite refusal, exponential backoff with jitter on reconnect, and automatic push of offline edits upon reconnection.
+- **Local Credential Hygiene:** `.shadow-sync.json` is written with `0600` permissions, auto-added to `.gitignore`, and can be kept passphrase-free via `--no-save-passphrase` + `SHADOW_SYNC_PASSPHRASE`.
+
+## Development
+
+```bash
+npm install
+npm run typecheck
+npm run build
+npm test
+```

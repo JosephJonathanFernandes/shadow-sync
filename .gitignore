@@ -1,3 +1,8 @@
-node_modules
+node_modules/
+dist/
+coverage/
 .shadow-sync.json
 .env
+.env.*
+!.env.example
+*.log

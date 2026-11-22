@@ -1,15 +1,16 @@
 {
-  "name": "server",
+  "name": "shadow-sync-relay",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+  "description": "Zero-trust WebSocket relay server for Shadow-Sync",
+  "main": "server.js",
+  "engines": {
+    "node": ">=18.0.0"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "license": "MIT",
   "dependencies": {
-    "ws": "^8.21.1"
+    "ws": "^8.18.0"
   }
 }
