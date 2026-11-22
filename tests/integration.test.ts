@@ -191,8 +191,10 @@ describe('Shadow-Sync end-to-end integration', () => {
     const envSender = path.join(tmpDir, 'sender.env');
     const envReceiver = path.join(tmpDir, 'receiver.env');
 
-    await fs.writeFile(envSender, 'PORT=3001\nAPI_TOKEN=secret_abc\nDB=pg\n', 'utf8');
     await fs.writeFile(envReceiver, 'PORT=4000\nDB=old_pg\n', 'utf8');
+    const olderTime = (Date.now() - 5_000) / 1000;
+    await fs.utimes(envReceiver, olderTime, olderTime);
+    await fs.writeFile(envSender, 'PORT=3001\nAPI_TOKEN=secret_abc\nDB=pg\n', 'utf8');
 
     // Sender pushes once (ignoring PORT) and disconnects completely
     const pushRes = await pushOnce({

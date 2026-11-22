@@ -108,7 +108,12 @@ env-sync server --port 8080 --ttl 24
 
 - Exposes `GET /health` returning `{ "status": "ok", "rooms": ..., "clients": ..., "cachedRooms": ... }`.
 - Retains only opaque encrypted ciphertext in an in-memory TTL + LRU cache (configurable via `--ttl <hours>`, set `0` to disable).
-- You can also deploy the standalone [`server/`](./server) directory directly to Render, Railway, or Fly.io (`npm install && npm start`).
+- You can also deploy the standalone [`server/`](./server) directory directly to Render, Railway, or Fly.io (`npm install && npm start`), or run it with Docker:
+
+```bash
+docker build -t shadow-sync-relay ./server
+docker run -p 8080:8080 shadow-sync-relay
+```
 
 ## Environment Variables
 
